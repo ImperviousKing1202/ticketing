@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Science Route Ticket</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    .header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+    .ticketNo { font-size: 20px; font-weight: 700; }
+    .hint { color:#555; font-size: 14px; margin-top: 4px; }
+    .gridBox {
+      position: relative;
+      margin-top: 18px;
+      padding: 18px;
+      border: 2px solid #111;
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .row { display:flex; gap:14px; justify-content:flex-start; }
+    .row.bottom { justify-content:flex-end; margin-top: 16px; }
+    .cell {
+      width: 200px;
+      height: 92px;
+      border: 2px solid #111;
+      border-radius: 12px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      text-align:center;
+      padding: 10px;
+      font-weight: 700;
+      box-sizing: border-box;
+      background: #fafafa;
+    }
+    .cell small { display:block; font-weight:600; margin-top:6px; color:#333; }
+    svg.arrows {
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      pointer-events:none;
+    }
+    .qr {
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:10px;
+      border: 2px dashed #111;
+      border-radius: 12px;
+      padding: 12px;
+      min-width: 170px;
+    }
+    .qr .label { font-size: 12px; color:#333; text-align:center; }
+    .btns { margin-top: 14px; display:flex; gap:10px; flex-wrap:wrap; }
+    button { padding:10px 12px; border-radius:10px; border:1px solid #111; background:#fff; cursor:pointer; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div>
+      <div class="ticketNo" id="ticketNo">Ticket #----</div>
+      <div class="hint">Scan the QR to open this ticket route on any phone.</div>
+      <div class="btns">
+        <button id="randomizeBtn" title="For preview only (does not change ticket id)">Preview new random route</button>
+        <button onclick="window.print()">Print</button>
+      </div>
+    </div>
+
+    <div class="qr">
+      <div id="qrcode"></div>
+      <div class="label" id="qrLabel"></div>
+    </div>
+  </div>
+
+  <div class="gridBox" id="gridBox">
+    <!-- arrows overlay -->
+    <svg class="arrows" id="arrows" viewBox="0 0 1000 420" preserveAspectRatio="none">
+      <defs>
+        <marker id="arrowHead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L9,3 L0,6 Z" fill="#111"></path>
+        </marker>
+      </defs>
+      <!-- paths will be injected -->
+    </svg>
+
+    <div class="row top" id="rowTop"></div>
+    <div class="row bottom" id="rowBottom"></div>
+  </div>
+</div>
+
+<!-- QR library (no build tools needed) -->
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script>
+  const ROOMS = [
+    "Chemistry",
+    "Biology",
+    "Physics",
+    "Astronomy",
+    "Geometry",
+    "Algebra",
+    "Statistics and Probabilities"
+  ];
+
+  // --- Deterministic PRNG (Mulberry32) ---
+  function mulberry32(seed) {
+    let t = seed >>> 0;
+    return function() {
+      t += 0x6D2B79F5;
+      let r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // --- Fisher–Yates shuffle (deterministic if rng is seeded) ---
+  function shuffledRooms(seed) {
+    const rng = mulberry32(seed);
+    const arr = ROOMS.slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  function pad4(n) {
+    return String(n).padStart(4, "0");
+  }
+
+  function getTicketId() {
+    const params = new URLSearchParams(window.location.search);
+    let id = params.get("id") || "0001";
+    // normalize
+    const num = Number(id);
+    if (!Number.isFinite(num) || num < 1 || num > 500) return 1;
+    return num;
+  }
+
+  function renderRoute(route) {
+    const top = document.getElementById("rowTop");
+    const bot = document.getElementById("rowBottom");
+    top.innerHTML = "";
+    bot.innerHTML = "";
+
+    // 4 on top
+    for (let i = 0; i < 4; i++) {
+      const div = document.createElement("div");
+      div.className = "cell";
+      div.dataset.index = i;
+      div.innerHTML = `${route[i]}<small>Step ${i+1}</small>`;
+      top.appendChild(div);
+    }
+
+    // 3 on bottom (snake right->left visually by using justify-content:flex-end)
+    // Steps 5..7 will appear aligned to the right; we still place left-to-right in DOM.
+    for (let i = 4; i < 7; i++) {
+      const div = document.createElement("div");
+      div.className = "cell";
+      div.dataset.index = i;
+      div.innerHTML = `${route[i]}<small>Step ${i+1}</small>`;
+      bot.appendChild(div);
+    }
+
+    drawArrows();
+  }
+
+  function drawArrows() {
+    // We draw arrows in SVG using normalized coordinates based on element positions inside gridBox.
+    const grid = document.getElementById("gridBox");
+    const svg = document.getElementById("arrows");
+    svg.innerHTML = `
+      <defs>
+        <marker id="arrowHead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L9,3 L0,6 Z" fill="#111"></path>
+        </marker>
+      </defs>
+    `;
+
+    // Collect cells in route order as they appear on screen:
+    const topCells = Array.from(document.querySelectorAll("#rowTop .cell"));
+    const botCells = Array.from(document.querySelectorAll("#rowBottom .cell"));
+
+    // Visual snake order: top left->right (0..3), then down to bottom RIGHTMOST (step 5),
+    // then bottom right->left (step 6..7).
+    // Because bottom row is justify-content:flex-end, the RIGHTMOST is botCells[2] (last element).
+    const order = [
+      topCells[0], topCells[1], topCells[2], topCells[3],
+      botCells[2], botCells[1], botCells[0]
+    ].filter(Boolean);
+
+    const gridRect = grid.getBoundingClientRect();
+
+    function centerOf(el) {
+      const r = el.getBoundingClientRect();
+      const cx = (r.left + r.right) / 2 - gridRect.left;
+      const cy = (r.top + r.bottom) / 2 - gridRect.top;
+      return { x: cx, y: cy };
+    }
+
+    // Map to SVG viewBox coordinates (1000 x 420)
+    const vbW = 1000, vbH = 420;
+    const scaleX = vbW / gridRect.width;
+    const scaleY = vbH / gridRect.height;
+
+    function toVB(pt) {
+      return { x: pt.x * scaleX, y: pt.y * scaleY };
+    }
+
+    for (let i = 0; i < order.length - 1; i++) {
+      const a = toVB(centerOf(order[i]));
+      const b = toVB(centerOf(order[i+1]));
+
+      // Use a gentle curve for readability
+      const midX = (a.x + b.x) / 2;
+      const d = `M ${a.x} ${a.y} Q ${midX} ${a.y} ${b.x} ${b.y}`;
+
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "#111");
+      path.setAttribute("stroke-width", "3");
+      path.setAttribute("marker-end", "url(#arrowHead)");
+      svg.appendChild(path);
+    }
+  }
+
+  function makeQR(url) {
+    const el = document.getElementById("qrcode");
+    el.innerHTML = "";
+    new QRCode(el, {
+      text: url,
+      width: 140,
+      height: 140,
+      correctLevel: QRCode.CorrectLevel.M
+    });
+    document.getElementById("qrLabel").textContent = url;
+  }
+
+  // --- Init ---
+  const ticketNum = getTicketId();
+  document.getElementById("ticketNo").textContent = `Ticket #${pad4(ticketNum)}`;
+
+  const baseUrl = window.location.origin + window.location.pathname;
+  const ticketUrl = `${baseUrl}?id=${pad4(ticketNum)}`;
+  makeQR(ticketUrl);
+
+  // Deterministic route for this ticket:
+  let currentRoute = shuffledRooms(ticketNum);
+  renderRoute(currentRoute);
+
+  // Preview button (doesn't change ticket id; just lets you test layouts)
+  document.getElementById("randomizeBtn").addEventListener("click", () => {
+    const seed = Math.floor(Math.random() * 1e9);
+    currentRoute = shuffledRooms(seed);
+    renderRoute(currentRoute);
+  });
+
+  // Redraw arrows on resize (important on mobile rotation)
+  window.addEventListener("resize", () => drawArrows());
+</script>
+</body>
+</html>
